@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -16,12 +17,14 @@ from kengine.config import EngineConfig
 from kengine.engine import Engine, StepOutput
 from kengine.sequence import SamplingParams, SeqStatus, Sequence
 
+logger = logging.getLogger(__name__)
+
 
 class CompletionRequest(BaseModel):
     prompt: str
     model: str | None = None
     max_tokens: int = Field(default=64, ge=1)
-    temperature: float = Field(default=0.0, ge=0.0)
+    temperature: float = Field(default=0.0, ge=0.0, allow_inf_nan=False)
     top_p: float = Field(default=1.0, gt=0.0, le=1.0)
     top_k: int = Field(default=0, ge=0)
     seed: int | None = None
@@ -65,7 +68,14 @@ def create_app(engine: Engine, model_name: str = "kengine") -> FastAPI:
                 wake.clear()
                 await wake.wait()
                 continue
-            for output in await asyncio.to_thread(engine.step):
+            try:
+                outputs = await asyncio.to_thread(engine.step)
+            except Exception:
+                # One bad step must not take the loop down with it: every later request
+                # would hang forever. Fail what was in flight and keep serving.
+                logger.exception("engine step failed; failing all in-flight requests")
+                outputs = [StepOutput(seq.id, -1, "error") for seq in engine.abort_all()]
+            for output in outputs:
                 queue = streams.get(output.seq_id)
                 if queue is not None:
                     queue.put_nowait(output)
@@ -90,6 +100,9 @@ def create_app(engine: Engine, model_name: str = "kengine") -> FastAPI:
         try:
             while True:
                 output = await queue.get()
+                if output.finish_reason == "error":
+                    yield "", "error"
+                    return
                 yield decoder.push(output.token_id), output.finish_reason
                 if output.finish_reason is not None:
                     return
@@ -138,6 +151,8 @@ def create_app(engine: Engine, model_name: str = "kengine") -> FastAPI:
         finish_reason = None
         async for text, finish_reason in run(seq):  # noqa: B007
             parts.append(text)
+        if finish_reason == "error":
+            raise HTTPException(status_code=500, detail="generation failed")
         body = chunk("".join(parts), finish_reason)
         prompt_tokens, completion_tokens = len(seq.prompt_ids), len(seq.output_ids)
         body["usage"] = {

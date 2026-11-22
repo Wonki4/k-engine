@@ -4,10 +4,14 @@ import torch
 
 from kengine.sequence import SamplingParams
 
+MIN_TEMPERATURE = 1e-5
+
 
 def sample(logits: torch.Tensor, params: SamplingParams, rng: torch.Generator | None = None) -> int:
     """Pick the next token from one sequence's logits ([V], fp32 on CPU)."""
-    if params.temperature <= 0:
+    # Dividing by a near-zero temperature overflows to inf and turns softmax into NaN, so
+    # anything this small is treated as what it means: greedy.
+    if params.temperature < MIN_TEMPERATURE:
         return int(logits.argmax())
 
     logits = logits / params.temperature

@@ -183,3 +183,8 @@ def test_sampler_top_p_keeps_smallest_covering_set():
     assert drawn == {0, 1}
     # A tiny top_p still leaves the single most likely token.
     assert sample(logits, SamplingParams(temperature=1.0, top_p=0.01), rng) == 0
+
+
+def test_sampler_treats_near_zero_temperature_as_greedy():
+    logits = torch.tensor([0.1, 3.0, -1.0, 2.9])
+    assert sample(logits, SamplingParams(temperature=1e-300)) == 1

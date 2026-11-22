@@ -149,6 +149,13 @@ class Engine:
     def abort(self, seq: Sequence) -> None:
         self.scheduler.finish(seq, "abort")
 
+    def abort_all(self) -> list[Sequence]:
+        """Abort every queued and running sequence, releasing their blocks."""
+        seqs = [*self.scheduler.running, *self.scheduler.waiting]
+        for seq in seqs:
+            self.abort(seq)
+        return seqs
+
     def has_work(self) -> bool:
         return self.scheduler.has_work()
 

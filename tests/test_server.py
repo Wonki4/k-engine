@@ -88,3 +88,26 @@ def test_incremental_decoder_holds_back_partial_characters(tokenizer):
     deltas = [decoder.push(i) for i in ids]
     assert "".join(deltas) == tokenizer.decode(ids)
     assert all("�" not in d for d in deltas)
+
+
+def test_near_zero_temperature_is_served_as_greedy(client):
+    request = {"prompt": PROMPTS[0], "max_tokens": 8}
+    greedy = client.post("/v1/completions", json=request).json()["choices"][0]["text"]
+    tiny = client.post("/v1/completions", json={**request, "temperature": 1e-300})
+    assert tiny.status_code == 200
+    assert tiny.json()["choices"][0]["text"] == greedy
+
+
+def test_failed_step_fails_the_request_but_not_the_server(client):
+    engine = client.engine
+    real_step = engine.step
+
+    def failing_step():
+        engine.step = real_step
+        raise RuntimeError("boom")
+
+    engine.step = failing_step
+    request = {"prompt": PROMPTS[0], "max_tokens": 8}
+    assert client.post("/v1/completions", json=request).status_code == 500
+    assert not engine.has_work()
+    assert client.post("/v1/completions", json=request).status_code == 200
